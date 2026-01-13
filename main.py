@@ -102,7 +102,7 @@ def main():
         logger.info(f"启动FastAPI服务: http://{args.host}:{args.port}")
         logger.info("API文档: http://{args.host}:{args.port}/docs")
         
-        from src.api import run_api
+        from src.api.server import run_api
         run_api(host=args.host, port=args.port)
     else:
         # 启动Gradio界面

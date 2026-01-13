@@ -12,9 +12,9 @@ import numpy as np
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.document_processor import Chunk
-from src.embedder import SearchResult
-from src.retriever import (
+from src.processing.document_processor import Chunk
+from src.retrieval.embedder import SearchResult
+from src.retrieval.retriever import (
     SparseRetriever,
     DenseRetriever,
     HybridRetriever,

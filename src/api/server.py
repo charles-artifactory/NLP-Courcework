@@ -15,8 +15,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .config import get_config
-from .rag_pipeline import get_pipeline, RAGPipeline
+from ..config import get_config
+from ..core.pipeline import get_pipeline, RAGPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,6 @@ class StatsResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时初始化
     logger.info("正在初始化RAG系统...")
     pipeline = get_pipeline()
     pipeline.initialize()
@@ -83,7 +82,6 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # 关闭时清理
     logger.info("RAG系统关闭")
 
 
@@ -96,7 +94,6 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
     
-    # 添加CORS中间件
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -140,16 +137,10 @@ async def upload_document(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = None
 ):
-    """
-    上传并索引文档
-    
-    支持格式: PDF, TXT, DOCX, Markdown
-    最大文件大小: 50MB
-    """
+    """上传并索引文档"""
     config = get_config()
     pipeline = get_pipeline()
     
-    # 验证文件格式
     filename = file.filename or "unknown"
     suffix = Path(filename).suffix.lower()
     
@@ -159,10 +150,9 @@ async def upload_document(
             detail=f"不支持的文件格式: {suffix}。支持的格式: {config.SUPPORTED_FORMATS}"
         )
     
-    # 验证文件大小
-    file.file.seek(0, 2)  # 移到文件末尾
+    file.file.seek(0, 2)
     file_size = file.file.tell()
-    file.file.seek(0)  # 移回开头
+    file.file.seek(0)
     
     if file_size > config.MAX_FILE_SIZE:
         raise HTTPException(
@@ -170,7 +160,6 @@ async def upload_document(
             detail=f"文件过大。最大允许: {config.MAX_FILE_SIZE // (1024*1024)}MB"
         )
     
-    # 保存文件到临时目录
     upload_path = config.UPLOAD_DIR / filename
     try:
         with open(upload_path, "wb") as buffer:
@@ -178,7 +167,6 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败: {e}")
     
-    # 索引文档
     try:
         result = pipeline.index_document(str(upload_path))
         
@@ -242,12 +230,7 @@ async def clear_all_documents():
 
 @app.post("/api/qa/query", response_model=QueryResponse, tags=["问答"])
 async def query(request: QueryRequest):
-    """
-    提交问题并获取答案
-    
-    支持多轮对话（通过session_id关联）
-    返回答案及来源引用
-    """
+    """提交问题并获取答案"""
     pipeline = get_pipeline()
     
     try:

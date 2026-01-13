@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import Config
-from src.rag_pipeline import (
+from src.core.pipeline import (
     RAGPipeline,
     ConversationManager,
     IndexResult,
@@ -113,9 +113,9 @@ class TestRAGPipelineUnit:
     def test_pipeline_initialization(self, mock_config):
         """测试流水线初始化"""
         # 使用模拟来避免加载实际模型
-        with patch('src.rag_pipeline.Embedder') as mock_embedder, \
-             patch('src.rag_pipeline.VectorStore') as mock_vector_store, \
-             patch('src.rag_pipeline.Generator') as mock_generator:
+        with patch('src.core.pipeline.Embedder') as mock_embedder, \
+             patch('src.core.pipeline.VectorStore') as mock_vector_store, \
+             patch('src.core.pipeline.Generator') as mock_generator:
             
             mock_embedder.return_value.model_name = "test-model"
             mock_vector_store.return_value.count = 0
@@ -129,9 +129,9 @@ class TestRAGPipelineUnit:
     
     def test_get_stats(self, mock_config):
         """测试获取统计信息"""
-        with patch('src.rag_pipeline.Embedder') as mock_embedder, \
-             patch('src.rag_pipeline.VectorStore') as mock_vector_store, \
-             patch('src.rag_pipeline.Generator') as mock_generator:
+        with patch('src.core.pipeline.Embedder') as mock_embedder, \
+             patch('src.core.pipeline.VectorStore') as mock_vector_store, \
+             patch('src.core.pipeline.Generator') as mock_generator:
             
             mock_embedder.return_value.model_name = "test-model"
             mock_vector_store.return_value.count = 10

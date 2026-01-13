@@ -43,7 +43,7 @@ class Config:
     TOP_K: int = 5  # 返回结果数量
     RERANK_TOP_K: int = 10  # 重排序前的候选数量
     HYBRID_ALPHA: float = 0.7  # 混合检索权重 (稠密检索权重)
-    SIMILARITY_THRESHOLD: float = 0.3  # 相似度阈值
+    SIMILARITY_THRESHOLD: float = 0.5  # 相似度阈值（过滤无关结果，越高越严格）
     
     # ==================== 重排序配置 ====================
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
@@ -128,4 +128,48 @@ def update_config(**kwargs) -> Config:
     for key, value in kwargs.items():
         if hasattr(config, key):
             setattr(config, key, value)
+    return config
+
+
+def update_llm_config(
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+    temperature: float = None,
+    max_tokens: int = None
+) -> Config:
+    """
+    更新LLM相关配置
+    
+    Args:
+        provider: LLM提供商 (ollama/openai)
+        model: 模型名称
+        base_url: API地址
+        api_key: API密钥
+        temperature: 温度参数
+        max_tokens: 最大token数
+        
+    Returns:
+        Config: 更新后的配置
+    """
+    global config
+    
+    if provider is not None:
+        config.LLM_PROVIDER = provider
+    if base_url is not None:
+        config.LLM_BASE_URL = base_url
+    if api_key is not None:
+        config.OPENAI_API_KEY = api_key
+    if temperature is not None:
+        config.TEMPERATURE = temperature
+    if max_tokens is not None:
+        config.MAX_NEW_TOKENS = max_tokens
+    
+    # 根据provider设置model
+    if model is not None:
+        if config.LLM_PROVIDER == "openai":
+            config.OPENAI_MODEL = model
+        config.LLM_MODEL = model
+    
     return config

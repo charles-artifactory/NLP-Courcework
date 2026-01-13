@@ -9,7 +9,7 @@ import re
 from typing import List, Dict, Optional, Iterator, Tuple
 from dataclasses import dataclass
 
-from .embedder import SearchResult
+from ..retrieval.embedder import SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +34,44 @@ class GenerationResult:
 
 # ==================== Prompt模板 ====================
 
-SYSTEM_PROMPT_CN = """你是一个专业的问答助手。请根据提供的参考资料回答用户问题。
+# RAG模式的系统提示词（有知识库时使用）
+SYSTEM_PROMPT_RAG_CN = """你是一个专业的问答助手。请根据提供的参考资料回答用户问题。
 
 规则：
-1. 只根据参考资料回答，不要编造信息
+1. 优先根据参考资料回答，不要编造信息
 2. 如果参考资料中没有相关内容，请明确说明"根据现有资料无法回答这个问题"
 3. 回答时引用来源，使用[1], [2]等标记
 4. 回答要准确、简洁、有条理
 5. 使用与用户问题相同的语言回答"""
 
+# 通用对话模式的系统提示词（无知识库时使用）
+SYSTEM_PROMPT_CHAT_CN = """你是一个友好、专业的AI助手。请用准确、简洁、有条理的方式回答用户问题。
+
+规则：
+1. 回答要准确、简洁、有条理
+2. 使用与用户问题相同的语言回答
+3. 如果不确定答案，请诚实说明
+4. 保持友好和专业的态度"""
+
+# 兼容旧版本的别名
+SYSTEM_PROMPT_CN = SYSTEM_PROMPT_RAG_CN
+
 SYSTEM_PROMPT_EN = """You are a professional Q&A assistant. Please answer user questions based on the provided reference materials.
 
 Rules:
-1. Only answer based on reference materials, do not make up information
+1. Prioritize answering based on reference materials, do not make up information
 2. If there is no relevant content in the reference materials, clearly state "Unable to answer this question based on available information"
 3. Cite sources using [1], [2] markers when answering
 4. Answers should be accurate, concise, and well-organized
 5. Answer in the same language as the user's question"""
+
+SYSTEM_PROMPT_CHAT_EN = """You are a friendly and professional AI assistant. Please answer user questions accurately, concisely, and in an organized manner.
+
+Rules:
+1. Answers should be accurate, concise, and well-organized
+2. Answer in the same language as the user's question
+3. If uncertain about an answer, be honest about it
+4. Maintain a friendly and professional attitude"""
 
 RAG_TEMPLATE = """参考资料：
 {contexts}
@@ -79,14 +100,6 @@ class PromptBuilder:
         rag_template: str = None,
         rag_template_with_history: str = None
     ):
-        """
-        初始化Prompt构建器
-        
-        Args:
-            system_prompt: 系统提示词
-            rag_template: RAG模板
-            rag_template_with_history: 带历史的RAG模板
-        """
         self.system_prompt = system_prompt or SYSTEM_PROMPT_CN
         self.rag_template = rag_template or RAG_TEMPLATE
         self.rag_template_with_history = rag_template_with_history or RAG_TEMPLATE_WITH_HISTORY
@@ -96,16 +109,7 @@ class PromptBuilder:
         search_results: List[SearchResult],
         max_contexts: int = 5
     ) -> str:
-        """
-        构建上下文文本
-        
-        Args:
-            search_results: 检索结果
-            max_contexts: 最大上下文数量
-            
-        Returns:
-            str: 格式化的上下文
-        """
+        """构建上下文文本"""
         if not search_results:
             return "（无相关参考资料）"
         
@@ -117,20 +121,12 @@ class PromptBuilder:
         return "\n\n".join(contexts)
     
     def build_history(self, history: List[Dict]) -> str:
-        """
-        构建对话历史文本
-        
-        Args:
-            history: 对话历史列表
-            
-        Returns:
-            str: 格式化的对话历史
-        """
+        """构建对话历史文本"""
         if not history:
             return ""
         
         lines = []
-        for msg in history[-6:]:  # 最近3轮对话
+        for msg in history[-6:]:
             role = "用户" if msg["role"] == "user" else "助手"
             lines.append(f"{role}: {msg['content']}")
         
@@ -142,17 +138,7 @@ class PromptBuilder:
         search_results: List[SearchResult],
         history: List[Dict] = None
     ) -> str:
-        """
-        构建完整的Prompt
-        
-        Args:
-            query: 用户问题
-            search_results: 检索结果
-            history: 对话历史
-            
-        Returns:
-            str: 完整的prompt
-        """
+        """构建完整的Prompt"""
         contexts = self.build_contexts(search_results)
         
         if history:
@@ -176,20 +162,14 @@ class PromptBuilder:
         search_results: List[SearchResult],
         history: List[Dict] = None
     ) -> List[Dict]:
-        """
-        构建消息列表格式（用于Chat API）
+        """构建消息列表格式（用于Chat API）"""
+        if search_results:
+            system_prompt = self.system_prompt
+        else:
+            system_prompt = SYSTEM_PROMPT_CHAT_CN
         
-        Args:
-            query: 用户问题
-            search_results: 检索结果
-            history: 对话历史
-            
-        Returns:
-            List[Dict]: 消息列表
-        """
-        messages = [{"role": "system", "content": self.system_prompt}]
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # 添加历史消息
         if history:
             for msg in history[-6:]:
                 messages.append({
@@ -197,9 +177,11 @@ class PromptBuilder:
                     "content": msg["content"]
                 })
         
-        # 添加当前问题（带上下文）
-        contexts = self.build_contexts(search_results)
-        user_message = f"参考资料：\n{contexts}\n\n问题：{query}"
+        if search_results:
+            contexts = self.build_contexts(search_results)
+            user_message = f"参考资料：\n{contexts}\n\n问题：{query}"
+        else:
+            user_message = query
         messages.append({"role": "user", "content": user_message})
         
         return messages
@@ -213,12 +195,6 @@ class SourceTracer:
     """
     
     def __init__(self, similarity_threshold: float = 0.5):
-        """
-        初始化来源追踪器
-        
-        Args:
-            similarity_threshold: 相似度阈值
-        """
         self.similarity_threshold = similarity_threshold
     
     def trace_sources(
@@ -226,19 +202,9 @@ class SourceTracer:
         answer: str,
         search_results: List[SearchResult]
     ) -> List[SourceRef]:
-        """
-        追踪答案中的内容来源
-        
-        Args:
-            answer: 生成的答案
-            search_results: 检索结果
-            
-        Returns:
-            List[SourceRef]: 来源引用列表
-        """
+        """追踪答案中的内容来源"""
         sources = []
         
-        # 从答案中提取已有的引用标记
         citation_pattern = r'\[(\d+)\]'
         citations = re.findall(citation_pattern, answer)
         
@@ -263,18 +229,19 @@ class SourceTracer:
         """
         在答案中高亮显示来源
         
-        对于已经有引用标记的答案，直接返回
-        
-        Args:
-            answer: 答案文本
-            sources: 来源列表
-            
-        Returns:
-            str: 带高亮的答案
+        注意：当前实现仅验证引用标记是否存在，
+        未来可扩展为HTML/Markdown高亮格式
         """
-        # 如果已经有引用标记，直接返回
+        # 验证答案中已有引用标记
         if re.search(r'\[\d+\]', answer):
             return answer
+        
+        # 如果没有引用标记但有来源，可以在末尾添加来源说明
+        if sources:
+            source_notes = "\n\n**参考来源：**\n"
+            for src in sources:
+                source_notes += f"- {src.text}: {src.document}\n"
+            return answer + source_notes
         
         return answer
     
@@ -282,15 +249,7 @@ class SourceTracer:
         self,
         search_results: List[SearchResult]
     ) -> List[Dict]:
-        """
-        格式化来源信息
-        
-        Args:
-            search_results: 检索结果
-            
-        Returns:
-            List[Dict]: 格式化的来源列表
-        """
+        """格式化来源信息"""
         return [
             {
                 "index": i + 1,
@@ -318,17 +277,6 @@ class Generator:
         temperature: float = 0.7,
         max_tokens: int = 1024
     ):
-        """
-        初始化生成器
-        
-        Args:
-            provider: 提供商 (ollama/openai)
-            model: 模型名称
-            base_url: API地址
-            api_key: API密钥（OpenAI需要）
-            temperature: 温度参数
-            max_tokens: 最大生成token数
-        """
         self.provider = provider
         self.model = model
         self.base_url = base_url
@@ -356,23 +304,24 @@ class Generator:
         try:
             import ollama
             self._client = ollama.Client(host=self.base_url)
-            # 测试连接
-            try:
-                self._client.list()
-                logger.info(f"Ollama连接成功: {self.base_url}")
-            except Exception as e:
-                logger.warning(f"Ollama连接失败: {e}，将使用模拟模式")
-                self._client = None
+            logger.info(f"Ollama客户端已创建: {self.base_url}")
+            # 不在初始化时检查连接，避免服务暂时不可用导致永久进入mock模式
+            # 连接问题将在实际调用时处理
         except ImportError:
             logger.warning("ollama库未安装，使用模拟模式")
             self._client = None
     
     def _init_openai(self):
-        """初始化OpenAI客户端"""
+        """初始化OpenAI客户端（支持OpenAI兼容API，如DeepSeek等）"""
         try:
             from openai import OpenAI
             if self.api_key:
-                self._client = OpenAI(api_key=self.api_key)
+                client_kwargs = {"api_key": self.api_key}
+                if self.base_url and self.base_url.strip():
+                    client_kwargs["base_url"] = self.base_url
+                    logger.info(f"使用自定义API地址: {self.base_url}")
+                
+                self._client = OpenAI(**client_kwargs)
                 logger.info("OpenAI客户端初始化成功")
             else:
                 logger.warning("未提供OpenAI API Key")
@@ -387,25 +336,12 @@ class Generator:
         search_results: List[SearchResult],
         history: List[Dict] = None
     ) -> GenerationResult:
-        """
-        生成答案
-        
-        Args:
-            query: 用户问题
-            search_results: 检索结果
-            history: 对话历史
-            
-        Returns:
-            GenerationResult: 生成结果
-        """
-        # 构建消息
+        """生成答案"""
         messages = self.prompt_builder.build_messages(
             query, search_results, history
         )
         
-        # 调用LLM
         if self._client is None:
-            # 模拟模式
             answer = self._generate_mock(query, search_results)
         elif self.provider == "ollama":
             answer = self._generate_ollama(messages)
@@ -414,10 +350,8 @@ class Generator:
         else:
             answer = self._generate_mock(query, search_results)
         
-        # 追踪来源
         sources = self.source_tracer.trace_sources(answer, search_results)
         
-        # 计算置信度
         if search_results:
             confidence = sum(r.score for r in search_results[:3]) / min(3, len(search_results))
         else:
@@ -441,9 +375,17 @@ class Generator:
                 }
             )
             return response["message"]["content"]
+        except ConnectionError as e:
+            logger.error(f"Ollama连接失败: {e}")
+            return f"⚠️ 无法连接到Ollama服务 ({self.base_url})。请确保Ollama已启动：`ollama serve`"
         except Exception as e:
+            error_msg = str(e)
             logger.error(f"Ollama生成失败: {e}")
-            return f"生成失败：{str(e)}"
+            if "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                return f"⚠️ 无法连接到Ollama服务 ({self.base_url})。请确保Ollama已启动。\n错误: {error_msg}"
+            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+                return f"⚠️ 模型 '{self.model}' 未找到。请先运行：`ollama pull {self.model}`"
+            return f"生成失败：{error_msg}"
     
     def _generate_openai(self, messages: List[Dict]) -> str:
         """使用OpenAI生成"""
@@ -466,9 +408,16 @@ class Generator:
     ) -> str:
         """模拟生成（用于测试或无LLM时）"""
         if not search_results:
-            return "根据现有资料无法回答这个问题。请上传相关文档后再试。"
+            return f"""您好！您的问题是："{query}"
+
+当前系统处于模拟模式，无法提供真实回答。
+
+请在左侧"LLM配置"区域配置Ollama或OpenAI后即可正常使用问答功能。
+
+💡 提示：
+- 使用Ollama：确保Ollama服务已启动，并填写正确的模型名称和地址
+- 使用OpenAI：填写您的API Key和模型名称"""
         
-        # 基于检索结果构建简单回答
         top_result = search_results[0]
         source = top_result.metadata.get("filename", "未知来源")
         
@@ -488,23 +437,12 @@ class Generator:
         search_results: List[SearchResult],
         history: List[Dict] = None
     ) -> Iterator[str]:
-        """
-        流式生成答案
-        
-        Args:
-            query: 用户问题
-            search_results: 检索结果
-            history: 对话历史
-            
-        Yields:
-            str: 生成的文本片段
-        """
+        """流式生成答案"""
         messages = self.prompt_builder.build_messages(
             query, search_results, history
         )
         
         if self._client is None or self.provider not in ["ollama", "openai"]:
-            # 模拟流式输出
             mock_response = self._generate_mock(query, search_results)
             for char in mock_response:
                 yield char
@@ -517,8 +455,16 @@ class Generator:
             elif self.provider == "openai":
                 for chunk in self._stream_openai(messages):
                     yield chunk
+        except ConnectionError as e:
+            yield f"⚠️ 无法连接到服务。请检查服务是否已启动。"
         except Exception as e:
-            yield f"生成失败：{str(e)}"
+            error_msg = str(e)
+            if "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                yield f"⚠️ 连接失败。请确保服务已启动。\n错误: {error_msg}"
+            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+                yield f"⚠️ 模型未找到。请先下载模型。"
+            else:
+                yield f"生成失败：{error_msg}"
     
     def _stream_ollama(self, messages: List[Dict]) -> Iterator[str]:
         """Ollama流式生成"""

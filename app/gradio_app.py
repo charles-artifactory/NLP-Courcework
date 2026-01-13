@@ -4,13 +4,11 @@ Gradio前端应用
 提供友好的Web交互界面
 """
 
-from src.rag_pipeline import get_pipeline, RAGPipeline
+from src.core.pipeline import get_pipeline, RAGPipeline
 from src.config import get_config
 import logging
-import tempfile
-import shutil
 from pathlib import Path
-from typing import List, Tuple, Generator, Optional
+from typing import List, Tuple, Generator, Dict
 
 import gradio as gr
 
@@ -219,16 +217,101 @@ def handle_delete_doc(doc_id: str) -> Tuple[str, List[List]]:
         return f"❌ 删除失败", get_document_list()
 
 
-def handle_clear_all() -> Tuple[str, List[List]]:
+def handle_clear_all() -> Tuple[str, List[List], List[dict], dict]:
     """
     清空所有文档
 
     Returns:
-        Tuple[str, List[List]]: (状态消息, 空文档列表)
+        Tuple: (状态消息, 空文档列表, 空对话历史, 空来源)
     """
     pipeline = get_pipeline()
     pipeline.clear_all_data()
-    return "✅ 已清空所有文档", []
+    pipeline.clear_conversation("gradio_session")
+    return "✅ 已清空所有文档", [], [], {}
+
+
+def get_current_llm_config() -> Dict:
+    """
+    获取当前LLM配置
+    
+    Returns:
+        Dict: 包含provider, ollama_model, ollama_url, openai_model, openai_key, openai_url
+    """
+    config = get_config()
+    return {
+        "provider": config.LLM_PROVIDER,
+        "ollama_model": config.LLM_MODEL if config.LLM_PROVIDER == "ollama" else "qwen2.5:7b",
+        "ollama_url": config.LLM_BASE_URL,
+        "openai_model": config.OPENAI_MODEL,
+        "openai_key": config.OPENAI_API_KEY,
+        "openai_url": config.LLM_BASE_URL if config.LLM_PROVIDER == "openai" else "https://api.openai.com/v1"
+    }
+
+
+def handle_llm_config_update(
+    provider: str,
+    ollama_model: str,
+    ollama_url: str,
+    openai_model: str,
+    openai_key: str,
+    openai_url: str
+) -> str:
+    """
+    更新LLM配置
+    
+    Args:
+        provider: LLM提供商
+        ollama_model: Ollama模型名称
+        ollama_url: Ollama API地址
+        openai_model: OpenAI模型名称
+        openai_key: OpenAI API密钥
+        openai_url: OpenAI API地址
+        
+    Returns:
+        str: 状态消息
+    """
+    pipeline = get_pipeline()
+    pipeline.initialize()
+    
+    try:
+        if provider == "ollama":
+            success = pipeline.update_generator(
+                provider=provider,
+                model=ollama_model,
+                base_url=ollama_url
+            )
+        else:  # openai
+            if not openai_key:
+                return "❌ 请输入OpenAI API Key"
+            success = pipeline.update_generator(
+                provider=provider,
+                model=openai_model,
+                base_url=openai_url,
+                api_key=openai_key
+            )
+        
+        if success:
+            return f"✅ LLM配置已更新: {provider} / {ollama_model if provider == 'ollama' else openai_model}"
+        else:
+            return "❌ 配置更新失败"
+    except Exception as e:
+        return f"❌ 配置更新失败: {str(e)}"
+
+
+def handle_provider_change(provider: str):
+    """
+    处理Provider切换
+    
+    Args:
+        provider: 选择的Provider
+        
+    Returns:
+        Tuple: 控制各配置区域的可见性
+    """
+    if provider == "ollama":
+        return gr.update(visible=True), gr.update(visible=False)
+    else:
+        return gr.update(visible=False), gr.update(visible=True)
 
 
 # ==================== 创建应用 ====================
@@ -295,7 +378,7 @@ def create_app() -> gr.Blocks:
                     )
                     delete_btn = gr.Button("删除", size="sm", scale=1)
 
-                gr.Markdown("### ⚙️ 设置")
+                gr.Markdown("### ⚙️ 检索设置")
 
                 top_k_slider = gr.Slider(
                     minimum=1,
@@ -308,6 +391,57 @@ def create_app() -> gr.Blocks:
                 stream_mode = gr.Checkbox(
                     label="流式输出",
                     value=True
+                )
+                
+                gr.Markdown("### 🤖 LLM 配置")
+                
+                # 获取当前配置
+                current_config = get_config()
+                
+                llm_provider = gr.Dropdown(
+                    choices=["ollama", "openai"],
+                    value=current_config.LLM_PROVIDER,
+                    label="LLM 提供商",
+                    info="选择使用Ollama本地模型或OpenAI API"
+                )
+                
+                # Ollama配置区
+                with gr.Group(visible=(current_config.LLM_PROVIDER == "ollama")) as ollama_config:
+                    ollama_model = gr.Textbox(
+                        label="Ollama 模型",
+                        value=current_config.LLM_MODEL,
+                        placeholder="例如: qwen2.5:7b, llama3:8b"
+                    )
+                    ollama_url = gr.Textbox(
+                        label="Ollama 地址",
+                        value=current_config.LLM_BASE_URL,
+                        placeholder="http://localhost:11434"
+                    )
+                
+                # OpenAI配置区
+                with gr.Group(visible=(current_config.LLM_PROVIDER == "openai")) as openai_config:
+                    openai_url = gr.Textbox(
+                        label="API Base URL",
+                        value="https://api.openai.com/v1",
+                        placeholder="https://api.openai.com/v1 或自定义地址"
+                    )
+                    openai_key = gr.Textbox(
+                        label="API Key",
+                        value=current_config.OPENAI_API_KEY,
+                        placeholder="sk-...",
+                        type="password"
+                    )
+                    openai_model = gr.Textbox(
+                        label="模型名称",
+                        value=current_config.OPENAI_MODEL,
+                        placeholder="例如: gpt-3.5-turbo, gpt-4"
+                    )
+                
+                llm_save_btn = gr.Button("💾 保存LLM配置", variant="secondary", size="sm")
+                llm_status = gr.Textbox(
+                    label="配置状态",
+                    interactive=False,
+                    lines=1
                 )
 
             # ==================== 右侧面板 ====================
@@ -323,8 +457,8 @@ def create_app() -> gr.Blocks:
                 with gr.Row():
                     question_input = gr.Textbox(
                         label="输入问题",
-                        placeholder="请输入您的问题...",
-                        lines=2,
+                        placeholder="请输入您的问题，按回车发送...",
+                        lines=1,
                         scale=5
                     )
                     send_btn = gr.Button("🚀 发送", variant="primary", scale=1)
@@ -371,27 +505,33 @@ def create_app() -> gr.Blocks:
             outputs=[upload_status, doc_table]
         )
 
-        # 清空所有文档
+        # 清空所有文档（同时清空对话和来源）
         clear_all_btn.click(
             fn=handle_clear_all,
             inputs=[],
-            outputs=[upload_status, doc_table]
+            outputs=[upload_status, doc_table, chatbot, sources_json]
         )
 
         # 发送问题 - 根据流式模式选择处理函数
-        def get_query_handler(stream: bool):
-            return handle_query_stream if stream else handle_query
+        def query_with_mode(question, history, top_k, use_stream):
+            """根据流式模式选择处理方式"""
+            if use_stream:
+                # 流式模式：使用 yield from 传递生成器
+                yield from handle_query_stream(question, history, top_k)
+            else:
+                # 非流式模式：直接返回结果
+                yield handle_query(question, history, top_k)
 
         send_btn.click(
-            fn=handle_query_stream,
-            inputs=[question_input, chatbot, top_k_slider],
+            fn=query_with_mode,
+            inputs=[question_input, chatbot, top_k_slider, stream_mode],
             outputs=[chatbot, sources_json, question_input]
         )
 
         # 回车发送
         question_input.submit(
-            fn=handle_query_stream,
-            inputs=[question_input, chatbot, top_k_slider],
+            fn=query_with_mode,
+            inputs=[question_input, chatbot, top_k_slider, stream_mode],
             outputs=[chatbot, sources_json, question_input]
         )
 
@@ -400,6 +540,20 @@ def create_app() -> gr.Blocks:
             fn=handle_clear,
             inputs=[],
             outputs=[chatbot, sources_json]
+        )
+        
+        # LLM Provider切换事件
+        llm_provider.change(
+            fn=handle_provider_change,
+            inputs=[llm_provider],
+            outputs=[ollama_config, openai_config]
+        )
+        
+        # 保存LLM配置事件
+        llm_save_btn.click(
+            fn=handle_llm_config_update,
+            inputs=[llm_provider, ollama_model, ollama_url, openai_model, openai_key, openai_url],
+            outputs=[llm_status]
         )
 
     return app
