@@ -289,6 +289,7 @@ class VectorStore:
         try:
             # 删除集合
             self.client.delete_collection(self.collection_name)
+            logger.info(f"已删除集合: {self.collection_name}")
         except Exception as e:
             logger.warning(f"删除集合时出错: {e}")
         
@@ -297,16 +298,29 @@ class VectorStore:
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"}
         )
+        logger.info(f"已重新创建集合: {self.collection_name}")
         
-        # 确保集合为空（双重保险）
-        if self.collection.count() > 0:
+        # 多次确保集合为空（三重保险）
+        for attempt in range(3):
+            count = self.collection.count()
+            if count == 0:
+                break
+                
             # 如果还有数据，强制删除所有
-            all_ids = self.collection.get()["ids"]
-            if all_ids:
-                self.collection.delete(ids=all_ids)
-                logger.info(f"强制删除了 {len(all_ids)} 个残留文档")
+            try:
+                all_data = self.collection.get()
+                all_ids = all_data.get("ids", [])
+                if all_ids:
+                    self.collection.delete(ids=all_ids)
+                    logger.warning(f"第{attempt+1}次尝试：强制删除了 {len(all_ids)} 个残留文档")
+            except Exception as e:
+                logger.error(f"强制删除失败: {e}")
         
-        logger.info("向量数据库已清空")
+        final_count = self.collection.count()
+        if final_count > 0:
+            logger.error(f"警告：向量数据库清空后仍有 {final_count} 个文档残留！")
+        else:
+            logger.info("向量数据库已完全清空，验证通过")
     
     @property
     def count(self) -> int:

@@ -358,14 +358,29 @@ class RAGPipeline:
         """清空所有数据"""
         self._ensure_initialized()
         
+        # 清空向量存储
         self._vector_store.clear()
+        logger.info("向量存储已清空")
+        
+        # 重新创建并更新稀疏检索器
         self._sparse_retriever = SparseRetriever()
-        self._retriever._sparse_retriever = self._sparse_retriever
+        self._retriever.sparse_retriever = self._sparse_retriever  # 修复：使用正确的属性名（无下划线）
+        logger.info("稀疏检索器已重置")
+        
+        # 清空对话管理器
         self._conversation_manager.clear_all()
+        
+        # 清空文档和chunk列表
         self._documents.clear()
         self._chunks.clear()
         
-        logger.info("已清空所有数据")
+        logger.info("所有数据已清空")
+        
+        # 验证清空结果
+        remaining_count = self._vector_store.count
+        if remaining_count > 0:
+            logger.warning(f"警告：向量存储中仍有 {remaining_count} 个文档，尝试强制清除")
+            self._vector_store.clear()  # 再次尝试清空
     
     def get_stats(self) -> Dict:
         """获取系统统计信息"""

@@ -375,17 +375,28 @@ class Generator:
                 }
             )
             return response["message"]["content"]
-        except ConnectionError as e:
+        except (ConnectionError, OSError) as e:
+            # 捕获连接错误和网络错误
             logger.error(f"Ollama连接失败: {e}")
-            return f"⚠️ 无法连接到Ollama服务 ({self.base_url})。请确保Ollama已启动：`ollama serve`"
+            raise ConnectionError(f"Ollama服务连接失败 ({self.base_url}): {str(e)}")
         except Exception as e:
-            error_msg = str(e)
+            error_msg = str(e).lower()
             logger.error(f"Ollama生成失败: {e}")
-            if "connection" in error_msg.lower() or "connect" in error_msg.lower():
-                return f"⚠️ 无法连接到Ollama服务 ({self.base_url})。请确保Ollama已启动。\n错误: {error_msg}"
-            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+            
+            # 检查是否是网络/连接相关错误
+            network_error_keywords = [
+                'connection', 'connect', 'refused', 'timeout',
+                'errno', 'address', 'network', 'unreachable',
+                'socket', 'host', 'port'
+            ]
+            
+            if any(keyword in error_msg for keyword in network_error_keywords):
+                raise ConnectionError(f"Ollama服务连接失败 ({self.base_url}): {str(e)}")
+            elif "model" in error_msg and "not found" in error_msg:
                 return f"⚠️ 模型 '{self.model}' 未找到。请先运行：`ollama pull {self.model}`"
-            return f"生成失败：{error_msg}"
+            
+            # 其他未知错误
+            return f"生成失败：{str(e)}"
     
     def _generate_openai(self, messages: List[Dict]) -> str:
         """使用OpenAI生成"""
@@ -456,30 +467,62 @@ class Generator:
                 for chunk in self._stream_openai(messages):
                     yield chunk
         except ConnectionError as e:
-            yield f"⚠️ 无法连接到服务。请检查服务是否已启动。"
+            # 连接错误 - 重新抛出，让上层处理友好提示
+            raise
         except Exception as e:
-            error_msg = str(e)
-            if "connection" in error_msg.lower() or "connect" in error_msg.lower():
-                yield f"⚠️ 连接失败。请确保服务已启动。\n错误: {error_msg}"
-            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
-                yield f"⚠️ 模型未找到。请先下载模型。"
+            error_msg = str(e).lower()
+            logger.error(f"流式生成失败: {e}")
+            
+            # 检查是否是网络相关错误
+            network_keywords = [
+                'connection', 'connect', 'refused', 'timeout',
+                'errno', 'address', 'network', 'unreachable',
+                'socket', 'host', 'port'
+            ]
+            
+            if any(keyword in error_msg for keyword in network_keywords):
+                # 网络错误 - 抛出ConnectionError让上层处理
+                raise ConnectionError(f"服务连接失败: {str(e)}")
+            elif "model" in error_msg and "not found" in error_msg:
+                yield f"⚠️ 模型 '{self.model}' 未找到。请先运行：`ollama pull {self.model}`"
             else:
-                yield f"生成失败：{error_msg}"
+                yield f"生成失败：{str(e)}"
     
     def _stream_ollama(self, messages: List[Dict]) -> Iterator[str]:
         """Ollama流式生成"""
-        response = self._client.chat(
-            model=self.model,
-            messages=messages,
-            stream=True,
-            options={
-                "temperature": self.temperature,
-                "num_predict": self.max_tokens
-            }
-        )
-        for chunk in response:
-            if "message" in chunk and "content" in chunk["message"]:
-                yield chunk["message"]["content"]
+        try:
+            response = self._client.chat(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                options={
+                    "temperature": self.temperature,
+                    "num_predict": self.max_tokens
+                }
+            )
+            for chunk in response:
+                if "message" in chunk and "content" in chunk["message"]:
+                    yield chunk["message"]["content"]
+        except (ConnectionError, OSError) as e:
+            # 捕获连接错误和网络错误
+            logger.error(f"Ollama流式连接失败: {e}")
+            raise ConnectionError(f"Ollama服务连接失败 ({self.base_url}): {str(e)}")
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.error(f"Ollama流式生成失败: {e}")
+            
+            # 检查是否是网络/连接相关错误
+            network_error_keywords = [
+                'connection', 'connect', 'refused', 'timeout',
+                'errno', 'address', 'network', 'unreachable',
+                'socket', 'host', 'port'
+            ]
+            
+            if any(keyword in error_msg for keyword in network_error_keywords):
+                raise ConnectionError(f"Ollama服务连接失败 ({self.base_url}): {str(e)}")
+            
+            # 其他错误继续抛出
+            raise
     
     def _stream_openai(self, messages: List[Dict]) -> Iterator[str]:
         """OpenAI流式生成"""

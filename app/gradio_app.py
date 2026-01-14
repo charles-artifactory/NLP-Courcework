@@ -22,12 +22,60 @@ logger = logging.getLogger(__name__)
 
 # ==================== 事件处理函数 ====================
 
-def handle_upload(files: List) -> Tuple[str, List[List]]:
+def handle_load_example(progress=gr.Progress()) -> Tuple[str, List[List], str]:
+    """
+    加载示例文档并提供示例问题
+    
+    Args:
+        progress: Gradio进度条对象
+    
+    Returns:
+        Tuple[str, List[List], str]: (上传状态, 文档列表, 示例问题提示)
+    """
+    # 示例文档路径
+    example_file = Path(__file__).parent.parent / "data" / "examples" / "sample_document.md"
+    
+    if not example_file.exists():
+        return "❌ 示例文件不存在", get_document_list(), ""
+    
+    progress(0, desc="📦 初始化系统...")
+    pipeline = get_pipeline()
+    pipeline.initialize()
+    
+    try:
+        progress(0.3, desc="📄 加载示例文档...")
+        result = pipeline.index_document(str(example_file))
+        
+        progress(0.8, desc="🔢 生成向量索引...")
+        
+        if result.success:
+            progress(1.0, desc="✅ 加载完成！")
+            
+            sample_questions = """📝 **示例问题建议**（复制粘贴到下方输入框）：
+
+🔹 什么是人工智能？它有哪些主要特征？
+🔹 What are the main types of machine learning?
+🔹 请解释RAG技术的工作原理
+🔹 深度学习和机器学习有什么区别？
+🔹 What are the advantages of using RAG technology?
+🔹 学习AI需要什么基础知识？"""
+            
+            status = f"✅ 示例文档已加载: {result.chunk_count}个文本块\n\n{sample_questions}"
+            return status, get_document_list(), ""
+        else:
+            return f"❌ 加载失败: {result.message}", get_document_list(), ""
+    except Exception as e:
+        logger.error(f"加载示例失败: {e}")
+        return f"❌ 加载示例失败: {str(e)}", get_document_list(), ""
+
+
+def handle_upload(files: List, progress=gr.Progress()) -> Tuple[str, List[List]]:
     """
     处理文件上传
 
     Args:
         files: 上传的文件列表
+        progress: Gradio进度条对象
 
     Returns:
         Tuple[str, List[List]]: (状态消息, 文档列表)
@@ -36,22 +84,40 @@ def handle_upload(files: List) -> Tuple[str, List[List]]:
         return "请选择要上传的文件", get_document_list()
 
     pipeline = get_pipeline()
+    
+    # 显示初始化进度
+    progress(0, desc="📦 初始化系统...")
     pipeline.initialize()
 
     results = []
-    for file in files:
+    total_files = len(files)
+    
+    for idx, file in enumerate(files):
         try:
             # file 可能是 tempfile 路径
             file_path = file.name if hasattr(file, 'name') else str(file)
+            filename = Path(file_path).name
+            
+            # 更新进度：显示当前处理的文件
+            progress((idx / total_files), desc=f"📄 处理文件 ({idx+1}/{total_files}): {filename}")
+            
+            # 索引过程的子进度
+            progress((idx + 0.3) / total_files, desc=f"📝 切片文档: {filename}")
             result = pipeline.index_document(file_path)
+            
+            progress((idx + 0.7) / total_files, desc=f"🔢 生成向量: {filename}")
 
             if result.success:
-                results.append(f"✅ {Path(file_path).name}: {result.chunk_count}个块")
+                results.append(f"✅ {filename}: {result.chunk_count}个文本块")
             else:
-                results.append(f"❌ {Path(file_path).name}: {result.message}")
+                results.append(f"❌ {filename}: {result.message}")
+                
         except Exception as e:
-            results.append(f"❌ 处理失败: {str(e)}")
-
+            results.append(f"❌ {filename if 'filename' in locals() else '未知文件'}: {str(e)}")
+    
+    # 完成
+    progress(1.0, desc="✅ 索引完成！")
+    
     status = "\n".join(results)
     doc_list = get_document_list()
 
@@ -83,21 +149,28 @@ def handle_query(
     question: str,
     history: List[dict],
     top_k: int
-) -> Tuple[List[dict], dict, str]:
+) -> Generator[Tuple[List[dict], dict, str], None, None]:
     """
-    处理用户问题
+    处理用户问题（非流式也用生成器模式以支持即时显示）
 
     Args:
         question: 用户问题
         history: 对话历史
         top_k: 检索数量
 
-    Returns:
+    Yields:
         Tuple[List[dict], dict, str]: (更新后的历史, 来源信息, 清空的输入框)
     """
     if not question.strip():
-        return history, {}, ""
+        yield history, {}, ""
+        return
 
+    # 立即显示用户消息和loading状态
+    history = history or []
+    history.append({"role": "user", "content": question})
+    history.append({"role": "assistant", "content": "🤔 思考中..."})
+    yield history, {}, ""
+    
     pipeline = get_pipeline()
     pipeline.initialize()
 
@@ -108,10 +181,8 @@ def handle_query(
             top_k=top_k
         )
 
-        # 更新历史 - 使用Gradio 6.x的新消息格式
-        history = history or []
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": result.answer})
+        # 更新助手回答
+        history[-1]["content"] = result.answer
 
         # 格式化来源
         sources_display = {
@@ -119,15 +190,79 @@ def handle_query(
             "sources": result.sources
         }
 
-        return history, sources_display, ""
+        yield history, sources_display, ""
 
+    except ConnectionError as e:
+        # 专门捕获连接错误
+        logger.error(f"LLM连接失败: {e}")
+        error_msg = f"""❌ **LLM服务连接失败**
+
+**可能原因**：
+1. 🔴 Ollama服务未启动
+2. ⚠️ Ollama地址配置错误
+3. 🌐 网络连接问题
+
+**解决方案**：
+
+💡 **方案1：启动Ollama服务**（推荐本地使用）
+```bash
+# 在新终端执行
+ollama serve
+```
+
+💡 **方案2：切换到OpenAI模式**（无需本地服务）
+1. 在左侧找到 **"🤖 LLM 配置"** 区域
+2. **LLM 提供商** 选择 `openai`
+3. 填写配置：
+   - **API Base URL**: `https://api.deepseek.com/v1` 或 `https://api.openai.com/v1`
+   - **API Key**: 你的API密钥
+   - **模型名称**: `deepseek-chat` 或 `gpt-3.5-turbo`
+4. 点击 **"💾 保存LLM配置"**
+5. 重新提问即可
+
+📝 **详细错误信息**: {str(e)}"""
+        
+        history[-1]["content"] = error_msg
+        yield history, {"error": "连接失败"}, ""
+        
     except Exception as e:
         logger.error(f"问答失败: {e}")
-        error_msg = f"处理失败: {str(e)}"
-        history = history or []
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": error_msg})
-        return history, {"error": str(e)}, ""
+        
+        # 检查是否是网络相关错误
+        error_str = str(e).lower()
+        network_keywords = [
+            'connection', 'connect', 'refused', 'timeout', 
+            'errno', 'address', 'network', 'unreachable',
+            'socket', 'host', 'port', 'ollama'
+        ]
+        
+        if any(keyword in error_str for keyword in network_keywords):
+            error_msg = f"""❌ **LLM服务连接失败**
+
+**可能原因**：
+1. 🔴 Ollama服务未启动
+2. ⚠️ Ollama地址配置错误
+3. 🌐 网络连接问题
+
+**解决方案**：
+
+💡 **方案1：启动Ollama服务**
+```bash
+ollama serve
+```
+
+💡 **方案2：切换到OpenAI模式**
+在左侧"🤖 LLM配置"区域：
+- 选择 `openai` 提供商
+- 填写API Key和模型名称
+- 点击"保存LLM配置"
+
+📝 **错误详情**: {str(e)}"""
+        else:
+            error_msg = f"❌ 处理失败: {str(e)}"
+        
+        history[-1]["content"] = error_msg
+        yield history, {"error": str(e)}, ""
 
 
 def handle_query_stream(
@@ -150,13 +285,14 @@ def handle_query_stream(
         yield history, {}, ""
         return
 
-    pipeline = get_pipeline()
-    pipeline.initialize()
-
-    # 使用Gradio 6.x的新消息格式
+    # 立即显示用户消息和loading状态
     history = history or []
     history.append({"role": "user", "content": question})
-    history.append({"role": "assistant", "content": ""})
+    history.append({"role": "assistant", "content": "🔍 检索中..."})
+    yield history, {}, ""
+    
+    pipeline = get_pipeline()
+    pipeline.initialize()
 
     try:
         full_answer = ""
@@ -177,9 +313,76 @@ def handle_query_stream(
 
             yield history, sources_display, ""
 
+    except ConnectionError as e:
+        # 专门捕获连接错误
+        logger.error(f"LLM连接失败: {e}")
+        error_msg = f"""❌ **LLM服务连接失败**
+
+**可能原因**：
+1. 🔴 Ollama服务未启动
+2. ⚠️ Ollama地址配置错误
+3. 🌐 网络连接问题
+
+**解决方案**：
+
+💡 **方案1：启动Ollama服务**（推荐本地使用）
+```bash
+# 在新终端执行
+ollama serve
+```
+
+💡 **方案2：切换到OpenAI模式**（无需本地服务）
+1. 在左侧找到 **"🤖 LLM 配置"** 区域
+2. **LLM 提供商** 选择 `openai`
+3. 填写配置：
+   - **API Base URL**: `https://api.deepseek.com/v1` 或 `https://api.openai.com/v1`
+   - **API Key**: 你的API密钥
+   - **模型名称**: `deepseek-chat` 或 `gpt-3.5-turbo`
+4. 点击 **"💾 保存LLM配置"**
+5. 重新提问即可
+
+📝 **详细错误信息**: {str(e)}"""
+        
+        history[-1]["content"] = error_msg
+        yield history, {"error": "连接失败"}, ""
+        
     except Exception as e:
         logger.error(f"流式问答失败: {e}")
-        history[-1]["content"] = f"处理失败: {str(e)}"
+        
+        # 检查是否是网络相关错误
+        error_str = str(e).lower()
+        network_keywords = [
+            'connection', 'connect', 'refused', 'timeout',
+            'errno', 'address', 'network', 'unreachable',
+            'socket', 'host', 'port', 'ollama'
+        ]
+        
+        if any(keyword in error_str for keyword in network_keywords):
+            error_msg = f"""❌ **LLM服务连接失败**
+
+**可能原因**：
+1. 🔴 Ollama服务未启动
+2. ⚠️ Ollama地址配置错误
+3. 🌐 网络连接问题
+
+**解决方案**：
+
+💡 **方案1：启动Ollama服务**
+```bash
+ollama serve
+```
+
+💡 **方案2：切换到OpenAI模式**
+在左侧"🤖 LLM配置"区域：
+- 选择 `openai` 提供商
+- 填写API Key和模型名称
+- 点击"保存LLM配置"
+
+📝 **错误详情**: {str(e)}"""
+        else:
+            error_msg = f"❌ 处理失败: {str(e)}"
+        
+        history[-1]["content"] = error_msg
         yield history, {"error": str(e)}, ""
 
 
@@ -334,12 +537,22 @@ def create_app() -> gr.Blocks:
         基于检索增强生成(RAG)技术的中英双语智能问答系统。上传文档，然后基于文档内容进行问答。
         
         **特色功能**: 混合检索 | 智能分块 | 答案溯源 | 结果重排序 | 多轮对话
+        
+        💡 点击左侧 "🎯 快速开始：加载示例文档" 按钮立即体验！
         """)
 
         with gr.Row():
             # ==================== 左侧面板 ====================
             with gr.Column(scale=1):
                 gr.Markdown("### 📁 文档管理")
+                
+                # 快速开始：示例文档按钮
+                with gr.Row():
+                    load_example_btn = gr.Button(
+                        "🎯 快速开始：加载示例文档", 
+                        variant="primary",
+                        size="sm"
+                    )
 
                 # 文件上传
                 file_upload = gr.File(
@@ -348,11 +561,11 @@ def create_app() -> gr.Blocks:
                     file_count="multiple"
                 )
 
-                upload_btn = gr.Button("📤 上传并索引", variant="primary")
+                upload_btn = gr.Button("📤 上传并索引", variant="secondary")
                 upload_status = gr.Textbox(
                     label="上传状态",
                     interactive=False,
-                    lines=3
+                    lines=6
                 )
 
                 gr.Markdown("### 📋 已索引文档")
@@ -484,6 +697,13 @@ def create_app() -> gr.Blocks:
 
         # ==================== 事件绑定 ====================
 
+        # 加载示例文档
+        load_example_btn.click(
+            fn=handle_load_example,
+            inputs=[],
+            outputs=[upload_status, doc_table, question_input]
+        )
+
         # 上传事件
         upload_btn.click(
             fn=handle_upload,
@@ -519,8 +739,8 @@ def create_app() -> gr.Blocks:
                 # 流式模式：使用 yield from 传递生成器
                 yield from handle_query_stream(question, history, top_k)
             else:
-                # 非流式模式：直接返回结果
-                yield handle_query(question, history, top_k)
+                # 非流式模式：也使用生成器以支持即时显示
+                yield from handle_query(question, history, top_k)
 
         send_btn.click(
             fn=query_with_mode,
